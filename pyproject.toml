@@ -1,10 +1,10 @@
 [project]
 name = "uncompresspy"
-version = "0.1.0"
+version = "0.1.1"
 authors = [
     { name = "Tiago Gomes", email = "tiagogomes@fe.up.pt" },
 ]
-description = "Pure Python package for uncompressing LZW files (.Z), such as the ones created by Unix's shell tool `compress`"
+description = "Pure Python package for uncompressing LZW files (.Z), such as the ones created by Unix's shell tool compress"
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.10"
 keywords = ["Compression", "LZW", "Lempel–Ziv–Welch", "uncompress", "decompress", ".Z", "Unix"]
