@@ -1,0 +1,28 @@
+[project]
+name = "uncompresspy"
+version = "0.1.0"
+authors = [
+    { name = "Tiago Gomes", email = "tiagogomes@fe.up.pt" },
+]
+description = "Pure Python package for uncompressing LZW files (.Z), such as the ones created by Unix's shell tool `compress`"
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.10"
+keywords = ["Compression", "LZW", "Lempel–Ziv–Welch", "uncompress", "decompress", ".Z", "Unix"]
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: File Formats",
+    "Topic :: System :: Archiving :: Compression",
+    "Topic :: Scientific/Engineering :: Astronomy"
+]
+
+[project.urls]
+Repository = "https://github.com/kYwzor/uncompresspy"
+Issues = "https://github.com/kYwzor/uncompresspy/issues"
+# Documentation = "https://uncompresspy.readthedocs.io/"
