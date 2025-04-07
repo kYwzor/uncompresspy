@@ -28,6 +28,8 @@ class LZWFile(io.RawIOBase):
 
         Only reading modes are supported ('r' and 'rb').
         """
+        self._file = None
+        self._close_file = False
         if mode in ('', 'r', 'rb'):
             # We always operate in binary mode
             mode = 'rb'
@@ -44,7 +46,6 @@ class LZWFile(io.RawIOBase):
             if not filename.seekable():
                 raise ValueError("Underlying file object must be seekable.")
             self._file = filename
-            self._close_file = False
         else:
             raise TypeError("filename must be a str, bytes, PathLike or file object")
 
