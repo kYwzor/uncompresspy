@@ -15,34 +15,57 @@ UNKNOWN_FLAGS = 0x60
 
 class LZWFile(io.RawIOBase):
     """
-    A file-like object that transparently decompresses an LZW-compressed .Z file on the fly.
+    A file-like object that transparently decompresses an LZW-compressed file on the fly.
     It does not load the entire compressed file into memory, and supports incremental reads via the read() method.
-    This class supports context management so you can use it with a with-statement.
+    It only supports a binary file interface (data read is returned as bytes). Context management is supported.
     """
 
-    def __init__(self, buffer_obj: BinaryIO, keep_buffer: bool = False, chunk_size: int = io.DEFAULT_BUFFER_SIZE):
-        if not buffer_obj.readable():
-            raise ValueError("Underlying buffer object must be readable.")
-        self.file = buffer_obj
-        self.chunk_size = chunk_size
+    def __init__(self, filename: str | bytes | os.PathLike | BinaryIO, mode = 'rb', keep_buffer: bool = False):
+        """Open an LZW-compressed file in binary mode.
+
+        If filename is a str, bytes, or PathLike object, it gives the name of the file to be opened. Otherwise, it
+        must be a file object, which will be used to read the compressed data.
+
+        Only reading modes are supported ('r' and 'rb').
+        """
+        if mode in ('', 'r', 'rb'):
+            # We always operate in binary mode
+            mode = 'rb'
+        else:
+            raise ValueError(f"Invalid mode: {mode!r} (only reading is supported)")
+
+        if isinstance(filename, (str, bytes, os.PathLike)):
+            # This is a path to a file, so we open the file
+            self._file = io.open(filename, mode)
+            self._close_file = True
+        elif hasattr(filename, "read") and hasattr(filename, "seek"):
+            if not filename.readable():
+                raise ValueError("Underlying file object must be readable.")
+            if not filename.seekable():
+                raise ValueError("Underlying file object must be seekable.")
+            self._file = filename
+            self._close_file = False
+        else:
+            raise TypeError("filename must be a str, bytes, PathLike or file object")
+
         self._init_header()
 
-        self.next_code = self.starting_code
-        self.bit_buffer = 0
-        self.bits_in_buffer = 0
-        self.prev_entry = None
-        self.code_width = INITIAL_CODE_WIDTH
-        self.current_mask = INITIAL_MASK
+        self._next_code = self._starting_code
+        self._bit_buffer = 0
+        self._bits_in_buffer = 0
+        self._prev_entry = None
+        self._code_width = INITIAL_CODE_WIDTH
+        self._current_mask = INITIAL_MASK
 
-        self.decomp_pos = 0
+        self._decomp_pos = 0
 
-        self.extra_buffer = bytearray()
-        self.keep_buffer = keep_buffer
-        if self.keep_buffer:
-            self.total_buffer = bytearray()
+        self._extra_buffer = bytearray()
+        self._keep_buffer = keep_buffer
+        if self._keep_buffer:
+            self._total_buffer = bytearray()
 
-    def _init_header(self):
-        header = self.file.read(3)
+    def _init_header(self) -> None:
+        header = self._file.read(3)
         if len(header) < 3:
             raise ValueError("File too short, missing header.")
         if header[0] != MAGIC_BYTE0 or header[1] != MAGIC_BYTE1:
@@ -51,20 +74,20 @@ class LZWFile(io.RawIOBase):
 
         flag_byte = header[2]
 
-        self.max_width = flag_byte & CODE_WIDTH_FLAG
-        if self.max_width < INITIAL_CODE_WIDTH:
+        self._max_width = flag_byte & CODE_WIDTH_FLAG
+        if self._max_width < INITIAL_CODE_WIDTH:
             raise ValueError(f"Invalid file header: Max code width less than the minimum of {INITIAL_CODE_WIDTH}.")
 
         if flag_byte & UNKNOWN_FLAGS:
             warnings.warn("File header contains unknown flags, decompression may be incorrect.")
 
-        self.block_mode = bool(flag_byte & BLOCK_MODE_FLAG)
+        self._block_mode = bool(flag_byte & BLOCK_MODE_FLAG)
 
-        self.dictionary = [i.to_bytes() for i in range(256)]
-        if self.block_mode:
+        self._dictionary = [i.to_bytes() for i in range(256)]
+        if self._block_mode:
             # In block mode, code 256 is reserved for CLEAR.
-            self.dictionary.append(b'')
-        self.starting_code = len(self.dictionary)
+            self._dictionary.append(b'')
+        self._starting_code = len(self._dictionary)
 
     def readable(self):
         return True
@@ -74,37 +97,39 @@ class LZWFile(io.RawIOBase):
         Read up to 'size' bytes of decompressed data.
         If size is negative, read until the end of the compressed stream.
         """
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
         read_all = False
         if size < 0:
             read_all = True
 
-        if not read_all and len(self.extra_buffer) >= size:
+        if not read_all and len(self._extra_buffer) >= size:
             # Early quit if we already have enough bytes decompressed, just serve those.
-            aux = self.extra_buffer[:size]
-            del self.extra_buffer[:size]
-            self.decomp_pos += size
-            if self.keep_buffer:
-                self.total_buffer += aux
+            aux = self._extra_buffer[:size]
+            del self._extra_buffer[:size]
+            self._decomp_pos += size
+            if self._keep_buffer:
+                self._total_buffer += aux
             return bytes(aux)
         else:
             # Otherwise use the entire extra buffer as our decomp_buffer
-            decomp_buffer = self.extra_buffer
+            decomp_buffer = self._extra_buffer
 
         # Here we use local variables to cache the accesses to self
         # While this may seem like an odd thing to do, these variables are accessed very frequently inside the loop
         # Using local variables in this case results in a real speed up of around 2x
-        bit_buffer = self.bit_buffer
-        bits_in_buffer = self.bits_in_buffer
-        code_width = self.code_width
-        current_mask = self.current_mask
-        next_code = self.next_code
-        prev_entry = self.prev_entry
+        bit_buffer = self._bit_buffer
+        bits_in_buffer = self._bits_in_buffer
+        code_width = self._code_width
+        current_mask = self._current_mask
+        next_code = self._next_code
+        prev_entry = self._prev_entry
 
-        dictionary = self.dictionary
-        file = self.file
-        max_width = self.max_width
-        block_mode = self.block_mode
-        starting_code = self.starting_code
+        dictionary = self._dictionary
+        file = self._file
+        max_width = self._max_width
+        block_mode = self._block_mode
+        starting_code = self._starting_code
 
         # Continue decompressing until we've reached the requested size or EOF.
         while read_all or len(decomp_buffer) < size:
@@ -118,7 +143,9 @@ class LZWFile(io.RawIOBase):
             cur_chunk = file.read(code_width * 2 ** (code_width - 4))
 
             if not cur_chunk:
-                # If there's nothing left to read, just quit
+                # This is EOF. There's nothing left to read, so we just quit.
+                # We can clear out the dictionary to release memory.
+                del dictionary[starting_code:]
                 break
 
             for i, cur_byte in enumerate(cur_chunk):
@@ -201,79 +228,86 @@ class LZWFile(io.RawIOBase):
                 bits_in_buffer = 0
 
         # The local variables may have been updated in the loop, so we need to update self
-        self.bit_buffer = bit_buffer
-        self.bits_in_buffer = bits_in_buffer
-        self.code_width = code_width
-        self.current_mask = current_mask
-        self.next_code = next_code
-        self.prev_entry = prev_entry
+        self._bit_buffer = bit_buffer
+        self._bits_in_buffer = bits_in_buffer
+        self._code_width = code_width
+        self._current_mask = current_mask
+        self._next_code = next_code
+        self._prev_entry = prev_entry
 
         # If more data was decompressed than requested, save the extra for later.
         if read_all:
             # Create a new extra buffer that is empty
-            self.extra_buffer = bytearray()
+            self._extra_buffer = bytearray()
         else:
             # Create a new extra buffer with the remaining data
-            self.extra_buffer = decomp_buffer[size:]
+            self._extra_buffer = decomp_buffer[size:]
             del decomp_buffer[size:]
-        self.decomp_pos += len(decomp_buffer)
-        if self.keep_buffer:
-            self.total_buffer += decomp_buffer
+        self._decomp_pos += len(decomp_buffer)
+        if self._keep_buffer:
+            self._total_buffer += decomp_buffer
         return bytes(decomp_buffer)
 
     def seekable(self):
         return True
 
     def tell(self):
-        return self.decomp_pos
+        return self._decomp_pos
 
     def seek(self, offset, whence=0):
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
         if whence == io.SEEK_SET:
             new_pos = offset
-            diff = offset - self.decomp_pos
+            diff = offset - self._decomp_pos
         elif whence == io.SEEK_CUR:
-            new_pos = self.decomp_pos + offset
+            new_pos = self._decomp_pos + offset
             if new_pos < 0:
                 raise ValueError(f"Can't seek to a negative position.")
             diff = offset
         elif whence == io.SEEK_END:
-            raise io.UnsupportedOperation("Cannot seek from end in a LZW compressed file.")
+            raise io.UnsupportedOperation("Cannot seek from end in an LZW compressed file.")
         else:
             raise ValueError(f"Invalid whence: {whence}")
         if diff > 0:
             # We have to advance, just read and ignore the output
             self.read(diff)
         elif diff < 0:
-            if self.keep_buffer:
-                self.extra_buffer = self.total_buffer[new_pos:] + self.extra_buffer
-                del self.total_buffer[new_pos:]
-                self.decomp_pos = new_pos
+            if self._keep_buffer:
+                self._extra_buffer = self._total_buffer[new_pos:] + self._extra_buffer
+                del self._total_buffer[new_pos:]
+                self._decomp_pos = new_pos
             else:
                 warnings.warn(f"Seeking backwards is extremely inefficient without the 'keep_buffer' option, as it "
                               f"requires restarting the decompression from the beginning of the file. Consider using"
                               f"the 'keep_buffer' option if seeking backwards is a common operation for your use-case.")
-                self.file.seek(0)
+                self._file.seek(0)
 
                 self._init_header()
 
-                self.next_code = self.starting_code
-                self.bit_buffer = 0
-                self.bits_in_buffer = 0
-                self.prev_entry = None
-                self.code_width = INITIAL_CODE_WIDTH
-                self.current_mask = INITIAL_MASK
+                self._next_code = self._starting_code
+                self._bit_buffer = 0
+                self._bits_in_buffer = 0
+                self._prev_entry = None
+                self._code_width = INITIAL_CODE_WIDTH
+                self._current_mask = INITIAL_MASK
 
-                self.decomp_pos = 0
+                self._decomp_pos = 0
 
-                self.extra_buffer = bytearray()
+                self._extra_buffer = bytearray()
 
                 self.read(new_pos)
         return new_pos
 
     def close(self):
         # Mimic file buffer behavior
-        if not self.file.closed:
-            self.file.close()
+        if self._close_file and self._file is not None:
+            if not self._file.closed:
+                self._file.close()
+                self._file = None
+        self._extra_buffer = None
+        self._total_buffer = None
+        self._dictionary = None
         super().close()
 
     def __enter__(self):
@@ -290,52 +324,66 @@ class LZWFile(io.RawIOBase):
 
     def __next__(self):
         # Allow iteration of the object
-        chunk = self.read(self.chunk_size)
+        chunk = self.read(io.DEFAULT_BUFFER_SIZE)
         if chunk == b"":
             # EOF
             raise StopIteration
         return chunk
 
 
-# Convenience function for opening .Z files.
-def open(filepath: str | os.PathLike, mode: str = 'rb', **kwargs):
+# Convenience function for opening LZW-files.
+def open(filename: str | bytes | os.PathLike | BinaryIO, mode: str = 'rb', encoding=None, errors=None, newline=None,
+         **kwargs) -> LZWFile | io.TextIOWrapper:
     """
-    Open a .Z (LZW compressed) file in binary mode and return a file-like object that decompresses data on the fly.
+    Open an LZW-compressed file in binary or text mode and return a file-like object that decompresses data on the fly.
+    filename can be either an actual file name (given as a str, bytes, or PathLike object), in which case the named file
+    is opened, or it can be an existing file object to read from.
+
+    The mode argument can be "r", "rb" (default) for binary mode or "rt" for text mode.
+
+    For text mode, an LZWFile object is created, and wrapped in an io.TextIOWrapper instance with the specified
+    encoding, error handling behavior, and line ending(s).
 
     Usage:
-      with uncompresspy.open('example.txt.Z') as f:
-          data = f.read(100)
-          # Will read 100 decompressed bytes from 'example.txt.Z'
+      with uncompresspy.open('example.txt.Z', 'rt') as f:
+          data = f.readline()
+          # Will read one line of decompressed bytes from 'example.txt.Z'
     """
-    if mode != 'rb':
-        raise ValueError("Only binary mode ('rb') is supported.")
-    file_obj = io.open(filepath, 'rb')
-    return LZWFile(file_obj, **kwargs)
+    if "t" in mode:
+        if "b" in mode:
+            raise ValueError(f"Invalid mode: {mode!r}")
+    else:
+        if encoding is not None:
+            raise ValueError("Argument 'encoding' not supported in binary mode")
+        if errors is not None:
+            raise ValueError("Argument 'errors' not supported in binary mode")
+        if newline is not None:
+            raise ValueError("Argument 'newline' not supported in binary mode")
+
+    binary_file = LZWFile(filename, mode.replace("t", ""), **kwargs)
+
+    if "t" in mode:
+        encoding = io.text_encoding(encoding)
+        return io.TextIOWrapper(binary_file, encoding, errors, newline)
+    else:
+        return binary_file
 
 
 # Convenience function for extracting
-def extract(input_filepath: str | os.PathLike, output_filepath: str | os.PathLike, **kwargs):
+def extract(input_filename: str | bytes | os.PathLike | BinaryIO, output_filename: str | bytes | os.PathLike,
+            overwrite=False) -> None:
     """
-    Extract a .Z (LZW compressed) input file into an uncompressed output file.
+    Extract an LZW-compressed input file into an uncompressed output file.
 
     Usage:
       uncompresspy.extract('example.txt.Z', 'example.txt')
       # Will write the uncompressed data from 'example.txt.Z' to 'example.txt'.
     """
-    with open(input_filepath, 'rb', **kwargs) as input_file:
-        with io.open(output_filepath, 'wb') as output_file:
+    if not overwrite:
+        if os.path.exists(output_filename):
+            raise FileExistsError(f'File {output_filename!r} already exists. If you mean to replace it, use the '
+                                  f'argument "overwrite=True".')
+    with LZWFile(input_filename, 'rb') as input_file:
+        with io.open(output_filename, 'wb') as output_file:
             for chunk in input_file:
                 output_file.write(chunk)
-
-
-def from_buffer(input_buffer: BinaryIO, **kwargs):
-    """
-    Return a file-like object that decompresses data in the input buffer on the fly.
-
-    Usage:
-      with open('example.txt.Z', 'rb') as f1:
-          with uncompresspy.from_buffer(f1) as f2:
-              data = f2.read(100)
-              # Will read 100 decompressed bytes from 'example.txt.Z'
-    """
-    return LZWFile(input_buffer, **kwargs)
