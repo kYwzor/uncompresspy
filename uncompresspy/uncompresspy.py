@@ -102,6 +102,12 @@ class LZWFile(io.RawIOBase):
             raise ValueError("I/O operation on closed file.")
         return self._decode_bytes(size)
 
+    def readinto(self, b):
+        with memoryview(b) as view, view.cast("B") as byte_view:
+            data = self.read(len(byte_view))
+            byte_view[:len(data)] = data
+        return len(data)
+
     def _decode_bytes(self, size=-1, get_bytes=True) -> bytes | None:
         read_all = False
         if size < 0:
@@ -309,36 +315,27 @@ class LZWFile(io.RawIOBase):
                 self.read(new_pos)
         return new_pos
 
+    def writable(self):
+        return False
+
+    def write(self, data):
+        raise io.UnsupportedOperation('write')
+
+    def fileno(self):
+        """Return the file descriptor for the underlying file."""
+        if self.closed:
+            raise ValueError("I/O operation on closed file")
+        return self._file.fileno()
+
     def close(self):
         # Mimic file buffer behavior
         if self._close_file and self._file is not None:
-            if not self._file.closed:
-                self._file.close()
-                self._file = None
+            self._file.close()
+            self._file = None
         self._extra_buffer = None
         self._total_buffer = None
         self._dictionary = None
         super().close()
-
-    def __enter__(self):
-        # Allow usage of context managers
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        # Allow usage of context managers
-        self.close()
-
-    def __iter__(self):
-        # Allow iteration of the object
-        return self
-
-    def __next__(self):
-        # Allow iteration of the object
-        chunk = self.read(io.DEFAULT_BUFFER_SIZE)
-        if chunk == b"":
-            # EOF
-            raise StopIteration
-        return chunk
 
 
 # Convenience function for opening LZW-files.
@@ -381,7 +378,7 @@ def open(filename: str | bytes | os.PathLike | BinaryIO, mode: str = 'rb', encod
 
 # Convenience function for extracting
 def extract(input_filename: str | bytes | os.PathLike | BinaryIO, output_filename: str | bytes | os.PathLike,
-            overwrite=False) -> None:
+            overwrite=False, chunk_size=io.DEFAULT_BUFFER_SIZE) -> None:
     """
     Extract an LZW-compressed input file into an uncompressed output file.
 
@@ -395,5 +392,5 @@ def extract(input_filename: str | bytes | os.PathLike | BinaryIO, output_filenam
                                   f'argument "overwrite=True".')
     with LZWFile(input_filename, 'rb') as input_file:
         with io.open(output_filename, 'wb') as output_file:
-            for chunk in input_file:
+            while chunk := input_file.read(chunk_size):
                 output_file.write(chunk)
