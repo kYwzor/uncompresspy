@@ -99,6 +99,9 @@ class LZWFile(io.RawIOBase):
         """
         if self.closed:
             raise ValueError("I/O operation on closed file.")
+        return self._decode_bytes(size)
+
+    def _decode_bytes(self, size=-1, get_bytes=True) -> bytes | None:
         read_all = False
         if size < 0:
             read_all = True
@@ -110,7 +113,10 @@ class LZWFile(io.RawIOBase):
             self._decomp_pos += size
             if self._keep_buffer:
                 self._total_buffer += aux
-            return bytes(aux)
+            if get_bytes:
+                return bytes(aux)
+            else:
+                return None
         else:
             # Otherwise use the entire extra buffer as our decomp_buffer
             decomp_buffer = self._extra_buffer
@@ -246,7 +252,10 @@ class LZWFile(io.RawIOBase):
         self._decomp_pos += len(decomp_buffer)
         if self._keep_buffer:
             self._total_buffer += decomp_buffer
-        return bytes(decomp_buffer)
+        if get_bytes:
+            return bytes(decomp_buffer)
+        else:
+            return None
 
     def seekable(self):
         return True
@@ -270,8 +279,8 @@ class LZWFile(io.RawIOBase):
         else:
             raise ValueError(f"Invalid whence: {whence}")
         if diff > 0:
-            # We have to advance, just read and ignore the output
-            self.read(diff)
+            # We have to advance, decode bytes but don't request them
+            self._decode_bytes(diff, get_bytes=False)
         elif diff < 0:
             if self._keep_buffer:
                 self._extra_buffer = self._total_buffer[new_pos:] + self._extra_buffer
