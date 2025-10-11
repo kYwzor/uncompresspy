@@ -201,9 +201,7 @@ class LZWFile(io.RawIOBase):
         bytes or None
             The decompressed data as bytes if get_bytes is True, otherwise None.
         """
-        read_all = False
-        if size < 0:
-            read_all = True
+        read_all = True if size < 0 else False
 
         if not read_all and len(self._extra_buffer) >= size:
             # Early quit if we already have enough bytes decompressed, just serve those.
@@ -212,8 +210,7 @@ class LZWFile(io.RawIOBase):
             self._decomp_pos += size
             if get_bytes:
                 return bytes(aux)
-            else:
-                return None
+            return None
         else:
             # Otherwise use the entire extra buffer as our decomp_buffer
             decomp_buffer = self._extra_buffer
@@ -270,7 +267,7 @@ class LZWFile(io.RawIOBase):
                 bit_buffer >>= code_width
                 bits_in_buffer -= code_width
 
-                if block_mode and code == _CLEAR_CODE:
+                if code == _CLEAR_CODE and block_mode:
                     """
                     We have encountered a CLEAR, but we have already read further into this file, we need to rewind.
                     The bitstream is divided into blocks of codes that have the same code_width.
@@ -310,8 +307,11 @@ class LZWFile(io.RawIOBase):
                     del dictionary[starting_code:]
                     next_code = starting_code
 
-                    # Revert to initial code_width (will be incremented right after we break the loop)
-                    code_width = _INITIAL_CODE_WIDTH - 1
+                    # Revert to initial code_width
+                    code_width = _INITIAL_CODE_WIDTH
+                    current_mask = _INITIAL_MASK
+                    bit_buffer = 0
+                    bits_in_buffer = 0
                     prev_entry = None
                     break
 
@@ -329,19 +329,19 @@ class LZWFile(io.RawIOBase):
 
                 decomp_buffer.extend(entry)
 
-                if prev_entry is not None and next_code <= current_mask:
+                if next_code <= current_mask and prev_entry is not None:
                     dictionary.append(prev_entry + entry[:1])
                     next_code += 1
 
                 prev_entry = entry
-
-            # Only increase code width if we won't surpass max.
-            # Some files will stay at max_width even after the entire dictionary is filled
-            if code_width < max_width:
-                code_width += 1
-                current_mask = 2 ** code_width - 1
-                bit_buffer = 0
-                bits_in_buffer = 0
+            else:
+                # Only increase code width if we won't surpass max.
+                # Some files will stay at max_width even after the entire dictionary is filled
+                if code_width < max_width:
+                    code_width += 1
+                    current_mask = 2 ** code_width - 1
+                    bit_buffer = 0
+                    bits_in_buffer = 0
 
         # The local variables may have been updated in the loop, so we need to update self
         self._bit_buffer = bit_buffer
@@ -362,8 +362,7 @@ class LZWFile(io.RawIOBase):
         self._decomp_pos += len(decomp_buffer)
         if get_bytes:
             return bytes(decomp_buffer)
-        else:
-            return None
+        return None
 
     def seekable(self) -> bool:
         """
